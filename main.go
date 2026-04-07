@@ -8,6 +8,8 @@ import (
 	"net"
 	"os"
 	"os/exec"
+	"strconv"
+	"strings"
 	"syscall"
 
 	"github.com/creack/pty"
@@ -22,23 +24,33 @@ func (m *multi) Set(s string) error { *m = append(*m, s); return nil }
 
 func main() {
 	//:22 is default for gliderlabs/ssh
-	bind := flag.String("b", ":22", "bind address:port")
+	bind := flag.String("b", ":22", "bind address:port or unix socket")
 	cmd := flag.String("c", "", "command prefix (optional)")
-	key := flag.String("k", "", "authorized public key")
+	var pubkeys multi
+	flag.Var(&pubkeys, "k", "authorized public key (repeatable)")
 	var hostkeys multi
 	flag.Var(&hostkeys, "h", "host key file (repeatable)")
 	flag.Parse()
-	var opts []ssh.Option
-	if len(hostkeys) == 0 || *key == "" {
+	if len(hostkeys) == 0 || len(pubkeys) == 0 {
 		log.Fatal("host key or pubkey is missing")
 	}
+	var opts []ssh.Option
 	for _, h := range hostkeys {
 		opts = append(opts, ssh.HostKeyFile(h))
 	}
-	pub, _, _, _, _ := ssh.ParseAuthorizedKey([]byte(*key))
+	var authorizedKeys []ssh.PublicKey
+	for _, kStr := range pubkeys {
+		pub, _, _, _, _ := ssh.ParseAuthorizedKey([]byte(kStr))
+		authorizedKeys = append(authorizedKeys, pub)
+	}
 	opts = append(opts, ssh.PublicKeyAuth(
 		func(ctx ssh.Context, k ssh.PublicKey) bool {
-			return ssh.KeysEqual(k, pub)
+			for _, authKey := range authorizedKeys {
+				if ssh.KeysEqual(k, authKey) {
+					return true
+				}
+			}
+			return false
 		}))
 
 	BaseSSH(*bind, *cmd, opts...)
@@ -66,10 +78,18 @@ func BaseSSH(addr, cmd_prefix string, options ...ssh.Option) {
 			}
 			d, _ := os.UserHomeDir()
 			cmd.Dir = d
-			tcpR, tcpL := s.RemoteAddr().(*net.TCPAddr), s.LocalAddr().(*net.TCPAddr)
+			tcpR, okR := s.RemoteAddr().(*net.TCPAddr)
+			tcpL, okL := s.LocalAddr().(*net.TCPAddr)
+			rem_ip, rem_port, loc_ip, loc_port := "null", uint64(0), "null", 0
+			if okR && okL {
+				rem_ip, rem_port, loc_ip, loc_port = tcpR.IP.String(), uint64(tcpR.Port), tcpL.IP.String(), tcpL.Port
+			} else {
+				// use a unique value as remote port
+				rem_port, _ = strconv.ParseUint(strings.TrimPrefix(fmt.Sprintf("%p", s), "0x"), 16, 64)
+			}
 			cmd.Env = append(os.Environ(),
-				fmt.Sprintf("SSH_CONNECTION=%s %d %s %d", tcpR.IP.String(), tcpR.Port, tcpL.IP.String(), tcpL.Port),
-				fmt.Sprintf("SSH_CLIENT=%s %d %d", tcpR.IP.String(), tcpR.Port, tcpL.Port)) //NOTE: SSH_CLIENT is deprecated
+				fmt.Sprintf("SSH_CONNECTION=%s %d %s %d", rem_ip, rem_port, loc_ip, loc_port),
+				fmt.Sprintf("SSH_CLIENT=%s %d %d", rem_ip, rem_port, loc_port)) //NOTE: SSH_CLIENT is deprecated
 			if ssh.AgentRequested(s) {
 				l, err := ssh.NewAgentListener()
 				if err != nil {
@@ -170,8 +190,26 @@ func BaseSSH(addr, cmd_prefix string, options ...ssh.Option) {
 	for _, v := range options {
 		server.SetOption(v)
 	}
+	if len(server.HostSigners) == 0 {
+		log.Println("Warning: no hostkey set (possibly due to missing permission). Will generate random one.")
+	}
 	log.Println("starting ssh server...")
-	log.Fatal(server.ListenAndServe())
+	if server.Addr == "" {
+		server.Addr = ":22"
+	}
+	_, _, err := net.SplitHostPort(server.Addr)
+	var ln net.Listener
+	if err != nil {
+		os.Remove(server.Addr)
+		ln, err = net.Listen("unix", server.Addr)
+	} else {
+		ln, err = net.Listen("tcp", server.Addr)
+	}
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer ln.Close()
+	log.Fatal(server.Serve(ln))
 }
 
 func SftpHandler(sess ssh.Session) {

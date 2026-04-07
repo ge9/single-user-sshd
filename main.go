@@ -22,23 +22,33 @@ func (m *multi) Set(s string) error { *m = append(*m, s); return nil }
 
 func main() {
 	//:22 is default for gliderlabs/ssh
-	bind := flag.String("b", ":22", "bind address:port")
+	bind := flag.String("b", ":22", "bind address:port or unix socket")
 	cmd := flag.String("c", "", "command prefix (optional)")
-	key := flag.String("k", "", "authorized public key")
+	var pubkeys multi
+	flag.Var(&pubkeys, "k", "authorized public key (repeatable)")
 	var hostkeys multi
 	flag.Var(&hostkeys, "h", "host key file (repeatable)")
 	flag.Parse()
-	var opts []ssh.Option
-	if len(hostkeys) == 0 || *key == "" {
+	if len(hostkeys) == 0 || len(pubkeys) == 0 {
 		log.Fatal("host key or pubkey is missing")
 	}
+	var opts []ssh.Option
 	for _, h := range hostkeys {
 		opts = append(opts, ssh.HostKeyFile(h))
 	}
-	pub, _, _, _, _ := ssh.ParseAuthorizedKey([]byte(*key))
+	var authorizedKeys []ssh.PublicKey
+	for _, kStr := range pubkeys {
+		pub, _, _, _, _ := ssh.ParseAuthorizedKey([]byte(kStr))
+		authorizedKeys = append(authorizedKeys, pub)
+	}
 	opts = append(opts, ssh.PublicKeyAuth(
 		func(ctx ssh.Context, k ssh.PublicKey) bool {
-			return ssh.KeysEqual(k, pub)
+			for _, authKey := range authorizedKeys {
+				if ssh.KeysEqual(k, authKey) {
+					return true
+				}
+			}
+			return false
 		}))
 
 	BaseSSH(*bind, *cmd, opts...)
@@ -171,7 +181,22 @@ func BaseSSH(addr, cmd_prefix string, options ...ssh.Option) {
 		server.SetOption(v)
 	}
 	log.Println("starting ssh server...")
-	log.Fatal(server.ListenAndServe())
+	if server.Addr == "" {
+		server.Addr = ":22"
+	}
+	_, _, err := net.SplitHostPort(server.Addr)
+	var ln net.Listener
+	if err != nil {
+		os.Remove(server.Addr)
+		ln, err = net.Listen("unix", server.Addr)
+	} else {
+		ln, err = net.Listen("tcp", server.Addr)
+	}
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer ln.Close()
+	log.Fatal(server.Serve(ln))
 }
 
 func SftpHandler(sess ssh.Session) {

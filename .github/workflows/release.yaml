@@ -1,0 +1,25 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - '*'
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build Binaries
+        run: |
+          GOOS=linux GOARCH=amd64 go build -o single-user-sshd-linux-amd64 main.go
+          GOOS=darwin GOARCH=amd64 go build -o single-user-sshd--darwin-amd64 main.go
+          GOOS=freebsd GOARCH=amd64 go build -o single-user-sshd--freebsd-amd64 main.go
+
+      - name: Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            single-user-sshd--linux-amd64
+            single-user-sshd--darwin-amd64
+            single-user-sshd--freebsd-amd64

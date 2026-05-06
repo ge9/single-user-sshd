@@ -13,3 +13,5 @@ require (
 	golang.org/x/crypto v0.41.0 // indirect
 	golang.org/x/sys v0.35.0 // indirect
 )
+
+replace github.com/gliderlabs/ssh => github.com/ge9-2/go-ssh-unix-socket v0.3.9-0.20260505085901-2e0fc06c1e28

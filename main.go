@@ -52,17 +52,34 @@ func main() {
 			}
 			return false
 		}))
-
-	BaseSSH(*bind, *cmd, opts...)
+	ln, err := createListener(*bind)
+	if err != nil {
+		log.Fatal(err)
+	}
+	err = BaseSSH(ln, *cmd, opts...)
+	if err != nil {
+		log.Printf("server error: %v", err)
+	}
+	ln.Close()
 }
 
-// Unix forwarding is currently not merged into master: https://github.com/gliderlabs/ssh/pull/196
-func BaseSSH(addr, cmd_prefix string, options ...ssh.Option) {
+func createListener(addr string) (net.Listener, error) {
+	if addr == "" {
+		addr = ":22"
+	}
+	_, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		os.Remove(addr)
+		return net.Listen("unix", addr)
+	}
+	return net.Listen("tcp", addr)
+}
+
+func BaseSSH(ln net.Listener, cmd_prefix string, options ...ssh.Option) error {
 	forwardHandler := &ssh.ForwardedTCPHandler{}
-	// Uncomment this to enable remote unix forwarding
-	// forwardedUnixHandler := &ssh.ForwardedUnixHandler{}
+	forwardedUnixHandler := &ssh.ForwardedUnixHandler{}
 	server := ssh.Server{
-		Addr:              addr,
+		Addr:              ln.Addr().String(),
 		SubsystemHandlers: map[string]ssh.SubsystemHandler{"sftp": SftpHandler},
 		Handler: func(s ssh.Session) {
 			cmd := exec.Command(cmd_prefix, s.RawCommand())
@@ -84,7 +101,7 @@ func BaseSSH(addr, cmd_prefix string, options ...ssh.Option) {
 			if okR && okL {
 				rem_ip, rem_port, loc_ip, loc_port = tcpR.IP.String(), uint64(tcpR.Port), tcpL.IP.String(), tcpL.Port
 			} else {
-				// use a unique value as remote port
+				// for unix sockets, use a unique value as remote port
 				rem_port, _ = strconv.ParseUint(strings.TrimPrefix(fmt.Sprintf("%p", s), "0x"), 16, 64)
 			}
 			cmd.Env = append(os.Environ(),
@@ -169,22 +186,18 @@ func BaseSSH(addr, cmd_prefix string, options ...ssh.Option) {
 		},
 		LocalPortForwardingCallback:   ssh.LocalPortForwardingCallback(func(ctx ssh.Context, dhost string, dport uint32) bool { return true }),
 		ReversePortForwardingCallback: ssh.ReversePortForwardingCallback(func(ctx ssh.Context, host string, port uint32) bool { return true }),
-		// Uncomment this to enable local unix forwarding
-		// LocalUnixForwardingCallback:   ssh.SimpleUnixLocalForwardingCallback,
-		// Uncomment this to enable remote unix forwarding
-		// ReverseUnixForwardingCallback: ssh.SimpleUnixReverseForwardingCallback,
+		LocalUnixForwardingCallback:   ssh.SimpleUnixLocalForwardingCallback,
+		ReverseUnixForwardingCallback: ssh.SimpleUnixReverseForwardingCallback,
 		RequestHandlers: map[string]ssh.RequestHandler{
-			"tcpip-forward":        forwardHandler.HandleSSHRequest,
-			"cancel-tcpip-forward": forwardHandler.HandleSSHRequest,
-			// Uncomment this to enable remote unix forwarding
-			// "streamlocal-forward@openssh.com":        forwardedUnixHandler.HandleSSHRequest,
-			// "cancel-streamlocal-forward@openssh.com": forwardedUnixHandler.HandleSSHRequest,
+			"tcpip-forward":                          forwardHandler.HandleSSHRequest,
+			"cancel-tcpip-forward":                   forwardHandler.HandleSSHRequest,
+			"streamlocal-forward@openssh.com":        forwardedUnixHandler.HandleSSHRequest,
+			"cancel-streamlocal-forward@openssh.com": forwardedUnixHandler.HandleSSHRequest,
 		},
 		ChannelHandlers: map[string]ssh.ChannelHandler{
-			"direct-tcpip": ssh.DirectTCPIPHandler,
-			"session":      ssh.DefaultSessionHandler,
-			// Uncomment this to enable local unix forwarding
-			// "direct-streamlocal@openssh.com": ssh.DirectStreamLocalHandler,
+			"direct-tcpip":                   ssh.DirectTCPIPHandler,
+			"session":                        ssh.DefaultSessionHandler,
+			"direct-streamlocal@openssh.com": ssh.DirectStreamLocalHandler,
 		},
 	}
 	for _, v := range options {
@@ -194,22 +207,7 @@ func BaseSSH(addr, cmd_prefix string, options ...ssh.Option) {
 		log.Println("Warning: no hostkey set (possibly due to missing permission). Will generate random one.")
 	}
 	log.Println("starting ssh server...")
-	if server.Addr == "" {
-		server.Addr = ":22"
-	}
-	_, _, err := net.SplitHostPort(server.Addr)
-	var ln net.Listener
-	if err != nil {
-		os.Remove(server.Addr)
-		ln, err = net.Listen("unix", server.Addr)
-	} else {
-		ln, err = net.Listen("tcp", server.Addr)
-	}
-	if err != nil {
-		log.Fatal(err)
-	}
-	defer ln.Close()
-	log.Fatal(server.Serve(ln))
+	return server.Serve(ln)
 }
 
 func SftpHandler(sess ssh.Session) {

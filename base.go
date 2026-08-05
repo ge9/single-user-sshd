@@ -7,11 +7,12 @@ import (
 	"net"
 	"os"
 	"os/exec"
+	"runtime"
 	"strconv"
 	"strings"
 	"syscall"
 
-	"github.com/creack/pty"
+	"github.com/charmbracelet/x/xpty"
 	"github.com/gliderlabs/ssh"
 	"github.com/pkg/sftp"
 )
@@ -27,11 +28,27 @@ func BaseSSH(ln net.Listener, cmd_prefix string, options ...ssh.Option) error {
 			if cmd_prefix == "" {
 				defaultShell := os.Getenv("SHELL")
 				if defaultShell == "" {
-					defaultShell = "/bin/sh"
+					if runtime.GOOS == "windows" {
+						defaultShell = os.Getenv("ComSpec") // 通常 C:\Windows\system32\cmd.exe
+						if defaultShell == "" {
+							defaultShell = "powershell.exe"
+						}
+					} else {
+						defaultShell = "/bin/sh"
+					}
 				}
-				cmd = exec.Command(defaultShell, "-c", s.RawCommand())
 				if s.RawCommand() == "" {
-					cmd = exec.Command(defaultShell, "-l")
+					if runtime.GOOS == "windows" {
+						cmd = exec.Command(defaultShell)
+					} else {
+						cmd = exec.Command(defaultShell, "-l")
+					}
+				} else {
+					if runtime.GOOS == "windows" {
+						cmd = exec.Command(defaultShell, "/c", s.RawCommand())
+					} else {
+						cmd = exec.Command(defaultShell, "-c", s.RawCommand())
+					}
 				}
 			}
 			d, _ := os.UserHomeDir()
@@ -58,36 +75,41 @@ func BaseSSH(ln net.Listener, cmd_prefix string, options ...ssh.Option) error {
 				cmd.Env = append(cmd.Env, fmt.Sprintf("%s=%s", "SSH_AUTH_SOCK", l.Addr().String()))
 			}
 			ptyReq, winCh, isPty := s.Pty()
-			var f *os.File
+			var xPty xpty.Pty
 			if isPty {
-				var slink *os.File
 				var err error
-				f, slink, err = pty.Open()
+				xPty, err = xpty.NewPty(ptyReq.Window.Width, ptyReq.Window.Height)
 				if err != nil {
 					panic(err)
 				}
-				defer f.Close()
+				defer xPty.Close()
 				cmd.Env = append(cmd.Env, fmt.Sprintf("TERM=%s", ptyReq.Term))
-				cmd.Env = append(cmd.Env, fmt.Sprintf("SSH_TTY=%s", slink.Name()))
-				cmd.Stdin, cmd.Stdout, cmd.Stderr = slink, slink, slink
-				cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true, Setctty: true}
-
-				if err := cmd.Start(); err != nil {
+				{
+					ssh_tty := fmt.Sprintf("SSH_TTY=/xpty-dummy/%s-%d-%s-%d", tcpR.IP.String(), tcpR.Port, tcpL.IP.String(), tcpL.Port)
+					if runtime.GOOS != "windows" {
+						if ttyDevice, ok := xPty.(interface{ Name() string }); ok {
+							ssh_tty = fmt.Sprintf("SSH_TTY=%s", ttyDevice.Name())
+						}
+					}
+					cmd.Env = append(cmd.Env, ssh_tty)
+				}
+				setSysProcAttr(cmd, isPty)
+				if err := xPty.Start(cmd); err != nil {
+					print("!")
 					s.Exit(1)
 					return
 				}
-				slink.Close()
 				go func() {
 					for win := range winCh {
-						pty.Setsize(f, &pty.Winsize{Rows: uint16(win.Height), Cols: uint16(win.Width)})
+						_ = xPty.Resize(win.Width, win.Height)
 					}
 				}()
-				go io.Copy(f, s) //stdin
-				go io.Copy(s, f) //stdout
+				go io.Copy(xPty, s)
+				go io.Copy(s, xPty)
 			} else {
 				stdin, _ := cmd.StdinPipe()
 				cmd.Stdout, cmd.Stderr = s, s.Stderr()
-				cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+				setSysProcAttr(cmd, isPty)
 				err := cmd.Start()
 				if err != nil {
 					s.Exit(1)
@@ -106,11 +128,11 @@ func BaseSSH(ln net.Listener, cmd_prefix string, options ...ssh.Option) error {
 			select {
 			case <-s.Context().Done():
 				if cmd.Process != nil {
-					syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+					_ = cmd.Process.Kill()
 				}
 			case err := <-waitDone:
-				if isPty && f != nil {
-					f.Close()
+				if isPty && xPty != nil {
+					_ = xPty.Close()
 				}
 				if err != nil {
 					if exiterr, ok := err.(*exec.ExitError); ok {

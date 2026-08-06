@@ -13,6 +13,7 @@ require (
 )
 
 require (
+	github.com/Microsoft/go-winio v0.6.2
 	github.com/anmitsu/go-shlex v0.0.0-20200514113438-38f4b401e2be // indirect
 	github.com/creack/pty v1.1.24 // indirect
 	github.com/pkg/sftp v1.13.10
@@ -20,4 +21,4 @@ require (
 	golang.org/x/sys v0.47.0 // indirect
 )
 
-replace github.com/gliderlabs/ssh => github.com/ge9-2/go-ssh-unix-socket v0.3.9-0.20260507135851-683590cf344b
+replace github.com/gliderlabs/ssh => github.com/ge9-2/go-ssh-unix-socket v0.3.9-0.20260806080818-fe6356dba37d

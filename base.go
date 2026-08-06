@@ -56,13 +56,13 @@ func BaseSSH(ln net.Listener, cmd_prefix string, options ...ssh.Option) error {
 				fmt.Sprintf("SSH_CONNECTION=%s %d %s %d", rem_ip, rem_port, loc_ip, loc_port),
 				fmt.Sprintf("SSH_CLIENT=%s %d %d", rem_ip, rem_port, loc_port)) //NOTE: SSH_CLIENT is deprecated
 			if ssh.AgentRequested(s) {
-				l, err := ssh.NewAgentListener()
+				l, sockpath, err := NewAgentListener()
 				if err != nil {
 					log.Fatal(err)
 				}
 				defer l.Close()
 				go ssh.ForwardAgentConnections(l, s)
-				cmd.Env = append(cmd.Env, fmt.Sprintf("SSH_AUTH_SOCK=%s", l.Addr().String()))
+				cmd.Env = append(cmd.Env, fmt.Sprintf("SSH_AUTH_SOCK=%s", sockpath))
 			}
 			ptyReq, winCh, isPty := s.Pty()
 			var xPty xpty.Pty

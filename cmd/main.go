@@ -20,9 +20,9 @@ func main() {
 	bind := flag.String("b", ":22", "bind address:port or unix socket")
 	cmd := flag.String("c", "", "command prefix (optional)")
 	var pubkeys multi
-	flag.Var(&pubkeys, "k", "authorized public key (repeatable)")
+	flag.Var(&pubkeys, "p", "authorized public key string (repeatable)")
 	var hostkeys multi
-	flag.Var(&hostkeys, "h", "host key file (repeatable)")
+	flag.Var(&hostkeys, "h", "host key file path (repeatable)")
 	flag.Parse()
 	if len(hostkeys) == 0 || len(pubkeys) == 0 {
 		log.Fatal("host key or pubkey is missing")

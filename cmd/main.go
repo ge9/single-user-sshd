@@ -5,6 +5,7 @@ import (
 	"log"
 	"net"
 	"os"
+	"strings"
 
 	susshd "github.com/ge9/single-user-sshd"
 	"github.com/gliderlabs/ssh"
@@ -18,6 +19,8 @@ func (m *multi) Set(s string) error { *m = append(*m, s); return nil }
 func main() {
 	//:22 is default for gliderlabs/ssh
 	bind := flag.String("b", ":22", "bind address:port or unix socket")
+	perlPath := flag.String("perl", "", "if specified, used to provide Cygwin style UNIX socket (effective only in Windows)")
+	acceptEnv := flag.String("accept-env", "LANG,LC_*", "comma-separated list of accepted envs")
 	cmd := flag.String("c", "", "command prefix (optional)")
 	var pubkeys multi
 	flag.Var(&pubkeys, "p", "authorized public key string (repeatable)")
@@ -49,7 +52,7 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	err = susshd.BaseSSH(ln, *cmd, opts...)
+	err = susshd.BaseSSH(ln, *cmd, strings.Split(*acceptEnv, ","), *perlPath, opts...)
 	if err != nil {
 		log.Printf("server error: %v", err)
 	}

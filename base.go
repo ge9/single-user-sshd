@@ -7,6 +7,7 @@ import (
 	"net"
 	"os"
 	"os/exec"
+	"path"
 	"runtime"
 	"strconv"
 	"strings"
@@ -17,7 +18,7 @@ import (
 	"github.com/pkg/sftp"
 )
 
-func BaseSSH(ln net.Listener, cmd_prefix string, options ...ssh.Option) error {
+func BaseSSH(ln net.Listener, cmd_prefix string, acceptEnv []string, perlPath string, options ...ssh.Option) error {
 	forwardHandler := &ssh.ForwardedTCPHandler{}
 	forwardedUnixHandler := &ssh.ForwardedUnixHandler{}
 	server := ssh.Server{
@@ -49,14 +50,27 @@ func BaseSSH(ln net.Listener, cmd_prefix string, options ...ssh.Option) error {
 			if okR && okL {
 				rem_ip, rem_port, loc_ip, loc_port = tcpR.IP.String(), uint64(tcpR.Port), tcpL.IP.String(), tcpL.Port
 			} else {
-				// for unix sockets, use a unique value as remote port
+				// for other type of listeners (e.g. unix sockets), use a unique value as remote port
 				rem_port, _ = strconv.ParseUint(strings.TrimPrefix(fmt.Sprintf("%p", s), "0x"), 16, 64)
 			}
 			cmd.Env = append(os.Environ(),
 				fmt.Sprintf("SSH_CONNECTION=%s %d %s %d", rem_ip, rem_port, loc_ip, loc_port),
 				fmt.Sprintf("SSH_CLIENT=%s %d %d", rem_ip, rem_port, loc_port)) //NOTE: SSH_CLIENT is deprecated
+			for _, env := range s.Environ() {
+				kv := strings.SplitN(env, "=", 2)
+				if len(kv) != 2 {
+					continue
+				}
+				key := kv[0]
+				for _, pattern := range acceptEnv {
+					if matched, _ := path.Match(pattern, key); matched { //use path.Match for Glob pattern matching
+						cmd.Env = append(cmd.Env, env)
+						break
+					}
+				}
+			}
 			if ssh.AgentRequested(s) {
-				l, sockpath, err := NewAgentListener()
+				l, sockpath, err := NewAgentListener(perlPath)
 				if err != nil {
 					log.Fatal(err)
 				}

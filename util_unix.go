@@ -23,7 +23,7 @@ func setSysProcAttr(cmd *exec.Cmd, isPty bool) {
 	}
 }
 
-func NewAgentListener() (net.Listener, string, error) {
+func NewAgentListener(_ string) (net.Listener, string, error) {
 	l, err := ssh.NewAgentListener()
 	if err != nil {
 		return nil, "", err

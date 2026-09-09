@@ -1,6 +1,8 @@
 package susshd
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -14,17 +16,18 @@ import (
 	"syscall"
 
 	"github.com/charmbracelet/x/xpty"
-	"github.com/gliderlabs/ssh"
+	"github.com/engity-com/ssh-server-go"
 	"github.com/pkg/sftp"
+	gossh "golang.org/x/crypto/ssh"
 )
 
-func BaseSSH(ln net.Listener, cmd_prefix string, acceptEnv []string, perlPath string, options ...ssh.Option) error {
+func BaseSSH(ctx context.Context, ln net.Listener, cmd_prefix string, acceptEnv []string, perlPath string, options ...ssh.Option) error {
 	forwardHandler := &ssh.ForwardedTCPHandler{}
 	forwardedUnixHandler := &ssh.ForwardedUnixHandler{}
 	server := ssh.Server{
 		Addr:              ln.Addr().String(),
 		SubsystemHandlers: map[string]ssh.SubsystemHandler{"sftp": SftpHandler},
-		Handler: func(s ssh.Session) {
+		Handler: func(s ssh.Session) error {
 			cmd := exec.Command(cmd_prefix, s.RawCommand())
 			if cmd_prefix == "" {
 				defaultShell := getDefaultShell()
@@ -75,7 +78,7 @@ func BaseSSH(ln net.Listener, cmd_prefix string, acceptEnv []string, perlPath st
 					log.Fatal(err)
 				}
 				defer l.Close()
-				go ssh.ForwardAgentConnections(l, s)
+				go ssh.ForwardAgentConnections(l, nil, s)
 				cmd.Env = append(cmd.Env, fmt.Sprintf("SSH_AUTH_SOCK=%s", sockpath))
 			}
 			ptyReq, winCh, isPty := s.Pty()
@@ -100,7 +103,7 @@ func BaseSSH(ln net.Listener, cmd_prefix string, acceptEnv []string, perlPath st
 				setSysProcAttr(cmd, isPty)
 				if err := xPty.Start(cmd); err != nil {
 					s.Exit(1)
-					return
+					return err
 				}
 				go func() {
 					for win := range winCh {
@@ -116,7 +119,7 @@ func BaseSSH(ln net.Listener, cmd_prefix string, acceptEnv []string, perlPath st
 				err := cmd.Start()
 				if err != nil {
 					s.Exit(1)
-					return
+					return err
 				}
 				go func() {
 					defer stdin.Close()
@@ -141,7 +144,7 @@ func BaseSSH(ln net.Listener, cmd_prefix string, acceptEnv []string, perlPath st
 					if exiterr, ok := err.(*exec.ExitError); ok {
 						if status, ok := exiterr.Sys().(syscall.WaitStatus); ok {
 							s.Exit(status.ExitStatus())
-							return
+							return nil
 						}
 					}
 					s.Exit(1)
@@ -149,11 +152,33 @@ func BaseSSH(ln net.Listener, cmd_prefix string, acceptEnv []string, perlPath st
 					s.Exit(0)
 				}
 			}
+			return nil
 		},
-		LocalPortForwardingCallback:   ssh.LocalPortForwardingCallback(func(ctx ssh.Context, dhost string, dport uint32) bool { return true }),
-		ReversePortForwardingCallback: ssh.ReversePortForwardingCallback(func(ctx ssh.Context, host string, port uint32) bool { return true }),
-		LocalUnixForwardingCallback:   ssh.SimpleUnixLocalForwardingCallback,
-		ReverseUnixForwardingCallback: ssh.SimpleUnixReverseForwardingCallback,
+		LocalPortForwardingCallback: func(ctx ssh.Context, _ gossh.ConnMetadata, dhost string, dport uint32) (bool, error) {
+			return true, nil
+		},
+		ReversePortForwardingCallback: func(ctx ssh.Context, _ gossh.ConnMetadata, host string, port uint32) (bool, error) { return true, nil },
+		LocalUnixForwardingCallback: func(ctx ssh.Context, _ gossh.ConnMetadata, socketPath string) (net.Conn, error) {
+			return (&net.Dialer{}).DialContext(ctx, "unix", socketPath)
+		},
+		ReverseUnixForwardingCallback: func(ctx ssh.Context, conn gossh.ConnMetadata, socketPath string) (net.Listener, error) {
+			var listenConfig net.ListenConfig
+			listener, err := listenConfig.Listen(ctx, "unix", socketPath)
+			if err != nil {
+				return nil, err
+			}
+			unlinker, ok := listener.(interface{ SetUnlinkOnClose(bool) })
+			if !ok {
+				_ = listener.Close()
+				return nil, errors.New("unix listener does not support unlink-on-close")
+			}
+			unlinker.SetUnlinkOnClose(true)
+			if err := os.Chmod(socketPath, 0o600); err != nil {
+				_ = listener.Close()
+				return nil, err
+			}
+			return listener, nil
+		},
 		RequestHandlers: map[string]ssh.RequestHandler{
 			"tcpip-forward":                          forwardHandler.HandleSSHRequest,
 			"cancel-tcpip-forward":                   forwardHandler.HandleSSHRequest,
@@ -173,7 +198,7 @@ func BaseSSH(ln net.Listener, cmd_prefix string, acceptEnv []string, perlPath st
 		log.Println("Warning: no hostkey set (possibly due to missing permission). Will generate random one.")
 	}
 	log.Println("starting ssh server...")
-	return server.Serve(ln)
+	return server.Serve(ctx, ln)
 }
 
 func getDefaultShell() string {
@@ -192,23 +217,23 @@ func getDefaultShell() string {
 	return "/bin/sh"
 }
 
-func SftpHandler(sess ssh.Session) {
-	d, _ := os.UserHomeDir()
+func SftpHandler(sess ssh.Session) error {
+	debugStream := io.Discard
 	serverOptions := []sftp.ServerOption{
-		sftp.WithServerWorkingDirectory(d),
+		sftp.WithDebug(debugStream),
 	}
 	server, err := sftp.NewServer(
 		sess,
 		serverOptions...,
 	)
 	if err != nil {
-		log.Printf("sftp server init error: %s\n", err)
-		return
+		return fmt.Errorf("initialize sftp server: %w", err)
 	}
-	if err := server.Serve(); err == io.EOF {
-		server.Close()
+	serveErr := server.Serve()
+	closeErr := server.Close()
+	if errors.Is(serveErr, io.EOF) {
+		serveErr = nil
 		fmt.Println("sftp client exited session.")
-	} else if err != nil {
-		fmt.Println("sftp server completed with error:", err)
 	}
+	return errors.Join(serveErr, closeErr)
 }

@@ -1,14 +1,16 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"log"
 	"net"
 	"os"
 	"strings"
 
+	"github.com/engity-com/ssh-server-go"
 	susshd "github.com/ge9/single-user-sshd"
-	"github.com/gliderlabs/ssh"
+	gossh "golang.org/x/crypto/ssh"
 )
 
 type multi []string
@@ -40,19 +42,19 @@ func main() {
 		authorizedKeys = append(authorizedKeys, pub)
 	}
 	opts = append(opts, ssh.PublicKeyAuth(
-		func(ctx ssh.Context, k ssh.PublicKey) bool {
+		func(ctx ssh.Context, conn gossh.ConnMetadata, k ssh.PublicKey) (bool, error) {
 			for _, authKey := range authorizedKeys {
 				if ssh.KeysEqual(k, authKey) {
-					return true
+					return true, nil
 				}
 			}
-			return false
+			return false, gossh.ServerAuthError{}
 		}))
 	ln, err := createListener(*bind)
 	if err != nil {
 		log.Fatal(err)
 	}
-	err = susshd.BaseSSH(ln, *cmd, strings.Split(*acceptEnv, ","), *perlPath, opts...)
+	err = susshd.BaseSSH(context.Background(), ln, *cmd, strings.Split(*acceptEnv, ","), *perlPath, opts...)
 	if err != nil {
 		log.Printf("server error: %v", err)
 	}

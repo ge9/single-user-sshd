@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"flag"
+	"io"
 	"log"
 	"net"
 	"os"
@@ -26,7 +27,17 @@ func main() {
 	flag.Var(&authKeyFiles, "a", "authorized_keys file path (repeatable)")
 	var hostkeys multi
 	flag.Var(&hostkeys, "h", "host key file path (repeatable)")
+	sftpServer := flag.Bool("sftp-server", false, "serve SFTP on stdin/stdout like sftp-server and exit")
 	flag.Parse()
+	if *sftpServer {
+		if err := susshd.ServeSftp(struct {
+			io.Reader
+			io.WriteCloser
+		}{os.Stdin, os.Stdout}); err != nil {
+			log.Fatal(err)
+		}
+		return
+	}
 	if len(hostkeys) == 0 || len(authKeyFiles) == 0 {
 		log.Fatal("host key or authorized_keys file is missing")
 	}

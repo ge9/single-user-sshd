@@ -4,26 +4,64 @@ on:
   push:
     tags:
       - '*'
+  workflow_dispatch:
+
+permissions:
+  contents: read
 
 jobs:
   build:
-    permissions:
-      contents: write
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - name: Build Binaries
         run: |
+          export CGO_ENABLED=0
           GOOS=linux GOARCH=amd64 go build -o single-user-sshd-linux-amd64 cmd/main.go
           GOOS=darwin GOARCH=amd64 go build -o single-user-sshd-darwin-amd64 cmd/main.go
           GOOS=freebsd GOARCH=amd64 go build -o single-user-sshd-freebsd-amd64 cmd/main.go
           GOOS=windows GOARCH=amd64 go build -o single-user-sshd-windows-amd64.exe cmd/main.go
+      - uses: actions/upload-artifact@v4
+        with:
+          name: binary-pc
+          path: single-user-sshd-*
+  build-termux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+      - name: Build in Termux Container
+        run: |
+          chmod -R a+rwX .
+          docker run --rm \
+            --platform linux/arm64 \
+            --privileged \
+            -v $PWD:/workspace \
+            -w /workspace \
+            termux/termux-docker:aarch64 \
+            /entrypoint.sh sh -c "
+              pkg update && pkg upgrade -y -o Dpkg::Options::=--force-confdef && pkg install -y golang clang
+              CGO_ENABLED=1 go build -buildvcs=false -o single-user-sshd-android-arm64 cmd/main.go
+            "
+      - uses: actions/upload-artifact@v4
+        with:
+          name: binary-termux
+          path: single-user-sshd-android-arm64
 
+  release:
+    needs: [build, build-termux]
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: ./artifacts
+          pattern: binary-*
+          merge-multiple: true
       - name: Release
         uses: softprops/action-gh-release@v2
         with:
-          files: |
-            single-user-sshd-linux-amd64
-            single-user-sshd-darwin-amd64
-            single-user-sshd-freebsd-amd64
-            single-user-sshd-windows-amd64.exe
+          files: ./artifacts/*

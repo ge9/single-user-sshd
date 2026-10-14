@@ -5,6 +5,7 @@ Supported:
 - ssh agent forwarding
   - for Windows, native ssh-agent (named pipe) and Cygwin-style UNIX socket (requires `-perl`). UNIX sockets are placed in %TEMP%\susshd, named accordingly with the named pipe behind it.
 - sftp
+  - `-sftp-server` makes the binary act as a standalone sftp-server on stdin/stdout
 - public key authentication (no password auth)
   - keys are read from authorized_keys files (`-a`, repeatable) on each authentication attempt
   - supported options: `command="..."` (`internal-sftp` runs the built-in sftp server), `restrict`, `[no-]port-forwarding`, `[no-]agent-forwarding`, `[no-]pty`. `[no-]X11-forwarding` and `[no-]user-rc` are accepted and have no effect. Keys with other options are ignored.

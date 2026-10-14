@@ -253,12 +253,21 @@ func getDefaultShell() string {
 }
 
 func SftpHandler(sess ssh.Session) error {
+	err := ServeSftp(sess)
+	if err == nil {
+		fmt.Println("sftp client exited session.")
+	}
+	return err
+}
+
+// ServeSftp serves the SFTP protocol on rwc until the client disconnects.
+func ServeSftp(rwc io.ReadWriteCloser) error {
 	debugStream := io.Discard
 	serverOptions := []sftp.ServerOption{
 		sftp.WithDebug(debugStream),
 	}
 	server, err := sftp.NewServer(
-		sess,
+		rwc,
 		serverOptions...,
 	)
 	if err != nil {
@@ -268,7 +277,6 @@ func SftpHandler(sess ssh.Session) error {
 	closeErr := server.Close()
 	if errors.Is(serveErr, io.EOF) {
 		serveErr = nil
-		fmt.Println("sftp client exited session.")
 	}
 	return errors.Join(serveErr, closeErr)
 }

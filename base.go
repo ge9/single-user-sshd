@@ -21,28 +21,41 @@ import (
 	gossh "golang.org/x/crypto/ssh"
 )
 
-func BaseSSH(ctx context.Context, ln net.Listener, cmd_prefix string, acceptEnv []string, perlPath string, options ...ssh.Option) error {
+func BaseSSH(ctx context.Context, ln net.Listener, acceptEnv []string, perlPath string, options ...ssh.Option) error {
 	forwardHandler := &ssh.ForwardedTCPHandler{}
 	forwardedUnixHandler := &ssh.ForwardedUnixHandler{}
 	server := ssh.Server{
-		Addr:              ln.Addr().String(),
-		SubsystemHandlers: map[string]ssh.SubsystemHandler{"sftp": SftpHandler},
+		Addr: ln.Addr().String(),
 		Handler: func(s ssh.Session) error {
-			cmd := exec.Command(cmd_prefix, s.RawCommand())
-			if cmd_prefix == "" {
-				defaultShell := getDefaultShell()
-				if s.RawCommand() == "" {
-					if runtime.GOOS == "windows" {
-						cmd = exec.Command(defaultShell)
-					} else {
-						cmd = exec.Command(defaultShell, "-l")
-					}
+			keyOpts := keyOptionsOf(s.Permissions().Permissions)
+			rawCmd := s.RawCommand()
+			var extraEnv []string
+			if keyOpts.HasCommand {
+				if keyOpts.Command == "internal-sftp" {
+					return SftpHandler(s)
+				}
+				orig := rawCmd
+				if s.Subsystem() == "sftp" {
+					orig = "internal-sftp"
+				}
+				if orig != "" {
+					extraEnv = append(extraEnv, "SSH_ORIGINAL_COMMAND="+orig)
+				}
+				rawCmd = keyOpts.Command
+			}
+			var cmd *exec.Cmd
+			defaultShell := getDefaultShell()
+			if rawCmd == "" && !keyOpts.HasCommand {
+				if runtime.GOOS == "windows" {
+					cmd = exec.Command(defaultShell)
 				} else {
-					if runtime.GOOS == "windows" {
-						cmd = exec.Command(defaultShell, "/c", s.RawCommand())
-					} else {
-						cmd = exec.Command(defaultShell, "-c", s.RawCommand())
-					}
+					cmd = exec.Command(defaultShell, "-l")
+				}
+			} else {
+				if runtime.GOOS == "windows" {
+					cmd = exec.Command(defaultShell, "/c", rawCmd)
+				} else {
+					cmd = exec.Command(defaultShell, "-c", rawCmd)
 				}
 			}
 			d, _ := os.UserHomeDir()
@@ -72,14 +85,16 @@ func BaseSSH(ctx context.Context, ln net.Listener, cmd_prefix string, acceptEnv 
 					}
 				}
 			}
+			cmd.Env = append(cmd.Env, extraEnv...)
 			if ssh.AgentRequested(s) {
 				l, sockpath, err := NewAgentListener(perlPath)
 				if err != nil {
-					log.Fatal(err)
+					log.Printf("agent forwarding: %v", err)
+				} else {
+					defer l.Close()
+					go ssh.ForwardAgentConnections(l, nil, s)
+					cmd.Env = append(cmd.Env, fmt.Sprintf("SSH_AUTH_SOCK=%s", sockpath))
 				}
-				defer l.Close()
-				go ssh.ForwardAgentConnections(l, nil, s)
-				cmd.Env = append(cmd.Env, fmt.Sprintf("SSH_AUTH_SOCK=%s", sockpath))
 			}
 			ptyReq, winCh, isPty := s.Pty()
 			var xPty xpty.Pty
@@ -154,14 +169,28 @@ func BaseSSH(ctx context.Context, ln net.Listener, cmd_prefix string, acceptEnv 
 			}
 			return nil
 		},
-		LocalPortForwardingCallback: func(ctx ssh.Context, _ gossh.ConnMetadata, dhost string, dport uint32) (bool, error) {
-			return true, nil
+		PtyCallback: func(ctx ssh.Context, _ ssh.Session, _ ssh.Pty) (bool, error) {
+			return !keyOptionsOf(ctx.Permissions().Permissions).NoPty, nil
 		},
-		ReversePortForwardingCallback: func(ctx ssh.Context, _ gossh.ConnMetadata, host string, port uint32) (bool, error) { return true, nil },
+		AgentForwardingCallback: func(ctx ssh.Context, _ ssh.Session) (bool, error) {
+			return !keyOptionsOf(ctx.Permissions().Permissions).NoAgentForwarding, nil
+		},
+		LocalPortForwardingCallback: func(ctx ssh.Context, _ gossh.ConnMetadata, dhost string, dport uint32) (bool, error) {
+			return !keyOptionsOf(ctx.Permissions().Permissions).NoPortForwarding, nil
+		},
+		ReversePortForwardingCallback: func(ctx ssh.Context, _ gossh.ConnMetadata, host string, port uint32) (bool, error) {
+			return !keyOptionsOf(ctx.Permissions().Permissions).NoPortForwarding, nil
+		},
 		LocalUnixForwardingCallback: func(ctx ssh.Context, _ gossh.ConnMetadata, socketPath string) (net.Conn, error) {
+			if keyOptionsOf(ctx.Permissions().Permissions).NoPortForwarding {
+				return nil, ssh.ErrServerPermissionDenied
+			}
 			return (&net.Dialer{}).DialContext(ctx, "unix", socketPath)
 		},
 		ReverseUnixForwardingCallback: func(ctx ssh.Context, conn gossh.ConnMetadata, socketPath string) (net.Listener, error) {
+			if keyOptionsOf(ctx.Permissions().Permissions).NoPortForwarding {
+				return nil, ssh.ErrServerPermissionDenied
+			}
 			var listenConfig net.ListenConfig
 			listener, err := listenConfig.Listen(ctx, "unix", socketPath)
 			if err != nil {
@@ -191,6 +220,12 @@ func BaseSSH(ctx context.Context, ln net.Listener, cmd_prefix string, acceptEnv 
 			"direct-streamlocal@openssh.com": ssh.DirectStreamLocalHandler,
 		},
 	}
+	server.SubsystemHandlers = map[string]ssh.SubsystemHandler{"sftp": func(s ssh.Session) error {
+		if keyOptionsOf(s.Permissions().Permissions).HasCommand {
+			return server.Handler(s)
+		}
+		return SftpHandler(s)
+	}}
 	for _, v := range options {
 		server.SetOption(v)
 	}

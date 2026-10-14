@@ -6,6 +6,8 @@ Supported:
   - for Windows, native ssh-agent (named pipe) and Cygwin-style UNIX socket (requires `-perl`). UNIX sockets are placed in %TEMP%\susshd, named accordingly with the named pipe behind it.
 - sftp
 - public key authentication (no password auth)
+  - keys are read from authorized_keys files (`-a`, repeatable) on each authentication attempt
+  - supported options: `command="..."` (`internal-sftp` runs the built-in sftp server), `restrict`, `[no-]port-forwarding`, `[no-]agent-forwarding`, `[no-]pty`. `[no-]X11-forwarding` and `[no-]user-rc` are accepted and have no effect. Keys with other options are ignored.
 - environment variable forwarding via SendEnv/SetEnv (with AcceptEnv-style filtering)
 - some environment variables (SSH_CONNECTION, SSH_CLIENT, SSH_TTY)
 

@@ -62,11 +62,11 @@ func NewAgentListener(perlPath string) (net.Listener, string, error) {
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	if perlPath == "" { //we don't use cygwin unix socket
-		return pipeL, pipeName, nil
-	}
 	if err != nil {
 		return nil, "", fmt.Errorf("failed to listen pipe after 5 retries: %w", err)
+	}
+	if perlPath == "" { //we don't use cygwin unix socket
+		return pipeL, pipeName, nil
 	}
 
 	tempDir := os.TempDir()

@@ -10,7 +10,6 @@ import (
 
 	"github.com/engity-com/ssh-server-go"
 	susshd "github.com/ge9/single-user-sshd"
-	gossh "golang.org/x/crypto/ssh"
 )
 
 type multi []string
@@ -23,38 +22,35 @@ func main() {
 	bind := flag.String("b", ":22", "bind address:port or unix socket")
 	perlPath := flag.String("perl", "", "if specified, used to provide Cygwin style UNIX socket (effective only in Windows)")
 	acceptEnv := flag.String("accept-env", "LANG,LC_*", "comma-separated list of accepted envs")
-	cmd := flag.String("c", "", "command prefix (optional)")
-	var pubkeys multi
-	flag.Var(&pubkeys, "p", "authorized public key string (repeatable)")
+	var authKeyFiles multi
+	flag.Var(&authKeyFiles, "a", "authorized_keys file path (repeatable)")
 	var hostkeys multi
 	flag.Var(&hostkeys, "h", "host key file path (repeatable)")
 	flag.Parse()
-	if len(hostkeys) == 0 || len(pubkeys) == 0 {
-		log.Fatal("host key or pubkey is missing")
+	if len(hostkeys) == 0 || len(authKeyFiles) == 0 {
+		log.Fatal("host key or authorized_keys file is missing")
 	}
 	var opts []ssh.Option
 	for _, h := range hostkeys {
 		opts = append(opts, ssh.HostKeyFile(h))
 	}
-	var authorizedKeys []ssh.PublicKey
-	for _, kStr := range pubkeys {
-		pub, _, _, _, _ := ssh.ParseAuthorizedKey([]byte(kStr))
-		authorizedKeys = append(authorizedKeys, pub)
+	nKeys := 0
+	for _, f := range authKeyFiles {
+		keys, err := susshd.LoadAuthorizedKeys(f)
+		if err != nil {
+			log.Fatal(err)
+		}
+		nKeys += len(keys)
 	}
-	opts = append(opts, ssh.PublicKeyAuth(
-		func(ctx ssh.Context, conn gossh.ConnMetadata, k ssh.PublicKey) (bool, error) {
-			for _, authKey := range authorizedKeys {
-				if ssh.KeysEqual(k, authKey) {
-					return true, nil
-				}
-			}
-			return false, gossh.ServerAuthError{}
-		}))
+	if nKeys == 0 {
+		log.Println("Warning: no valid authorized key found")
+	}
+	opts = append(opts, susshd.AuthorizedKeysAuth(authKeyFiles))
 	ln, err := createListener(*bind)
 	if err != nil {
 		log.Fatal(err)
 	}
-	err = susshd.BaseSSH(context.Background(), ln, *cmd, strings.Split(*acceptEnv, ","), *perlPath, opts...)
+	err = susshd.BaseSSH(context.Background(), ln, strings.Split(*acceptEnv, ","), *perlPath, opts...)
 	if err != nil {
 		log.Printf("server error: %v", err)
 	}

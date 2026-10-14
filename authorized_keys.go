@@ -18,6 +18,7 @@ type KeyOptions struct {
 	NoPortForwarding  bool
 	NoAgentForwarding bool
 	NoPty             bool
+	InternalSftp      bool // serve sftp subsystem internally even with command
 }
 
 type keyOptionsKey struct{}
@@ -69,6 +70,8 @@ func ParseKeyOptions(options []string) (*KeyOptions, error) {
 			o.NoAgentForwarding = name == "no-agent-forwarding"
 		case "no-pty", "pty":
 			o.NoPty = name == "no-pty"
+		case "internal-sftp@susshd":
+			o.InternalSftp = true
 		case "no-x11-forwarding", "x11-forwarding", "no-user-rc", "user-rc":
 			// X11 forwarding and user rc are not supported anyway
 		default:

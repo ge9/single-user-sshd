@@ -1,0 +1,87 @@
+name: single-user-sshd
+description: Download single-user-sshd from the releases and run it in the background
+inputs:
+  port:
+    description: Listening port
+    default: "5022"
+  address:
+    description: Listening address (all addresses if empty; use [addr] for IPv6)
+    default: ""
+  authorized-keys:
+    description: authorized_keys file (default ~/.ssh/authorized_keys, or administrators_authorized_keys on Windows)
+    default: ""
+  version:
+    description: Release tag to download
+    default: latest
+runs:
+  using: composite
+  steps:
+    - name: Download single-user-sshd
+      shell: bash
+      env:
+        VERSION: ${{ inputs.version }}
+      run: |
+        set -e
+        case "$RUNNER_ARCH" in
+          X64) arch=amd64 ;;
+          ARM64) arch=arm64 ;;
+          *) echo "::error::unsupported arch: $RUNNER_ARCH"; exit 1 ;;
+        esac
+        case "$RUNNER_OS" in
+          Linux) asset=single-user-sshd-linux-$arch bin=susshd ;;
+          macOS) asset=single-user-sshd-darwin-$arch bin=susshd ;;
+          # VS Code Remote SSH requires the name sshd.exe
+          Windows) asset=single-user-sshd-windows-$arch.exe bin=sshd.exe ;;
+          *) echo "::error::unsupported OS: $RUNNER_OS"; exit 1 ;;
+        esac
+        if [ "$VERSION" = latest ]; then
+          url=https://github.com/ge9/single-user-sshd/releases/latest/download/$asset
+        else
+          url=https://github.com/ge9/single-user-sshd/releases/download/$VERSION/$asset
+        fi
+        dir="$RUNNER_TEMP/susshd"
+        mkdir -p "$dir"
+        curl -fsSL --retry 3 -o "$dir/$bin" "$url"
+        chmod +x "$dir/$bin"
+        rm -f "$dir/hostkey" "$dir/hostkey.pub"
+        ssh-keygen -q -t ed25519 -N '' -f "$dir/hostkey"
+
+    - name: Start single-user-sshd
+      if: runner.os != 'Windows'
+      shell: bash
+      env:
+        PORT: ${{ inputs.port }}
+        ADDRESS: ${{ inputs.address }}
+        AUTHORIZED_KEYS: ${{ inputs.authorized-keys }}
+      run: |
+        dir="$RUNNER_TEMP/susshd"
+        keys="${AUTHORIZED_KEYS:-$HOME/.ssh/authorized_keys}"
+        nohup "$dir/susshd" -b "$ADDRESS:$PORT" -h "$dir/hostkey" -a "$keys" > "$dir/log" 2>&1 &
+        pid=$!
+        sleep 1
+        if ! kill -0 $pid 2>/dev/null; then
+          cat "$dir/log"
+          exit 1
+        fi
+
+    - name: Start single-user-sshd (Windows)
+      if: runner.os == 'Windows'
+      shell: pwsh
+      env:
+        PORT: ${{ inputs.port }}
+        ADDRESS: ${{ inputs.address }}
+        AUTHORIZED_KEYS: ${{ inputs.authorized-keys }}
+      run: |
+        $dir = Join-Path $env:RUNNER_TEMP susshd
+        $keys = if ($env:AUTHORIZED_KEYS) { $env:AUTHORIZED_KEYS } else { Join-Path $env:PROGRAMDATA ssh\administrators_authorized_keys }
+        New-NetFirewallRule -DisplayName single-user-sshd -Direction Inbound -Protocol TCP -LocalPort $env:PORT -Action Allow | Out-Null
+        # Start-Process -Redirect* lets the child inherit the step's output pipes, and the runner kills
+        # the process tree 5 seconds after the step if they are still open. Use ShellExecute (no handle
+        # inheritance) and redirect inside cmd instead.
+        $p = Start-Process -FilePath cmd.exe -WindowStyle Hidden -PassThru `
+          -ArgumentList "/c `"`"$dir\sshd.exe`" -b `"$($env:ADDRESS):$($env:PORT)`" -h `"$dir\hostkey`" -a `"$keys`" > `"$dir\log`" 2> `"$dir\err.log`"`""
+        Start-Sleep 1
+        if ($p.HasExited) {
+          Get-Content (Join-Path $dir log), (Join-Path $dir err.log)
+          exit 1
+        }

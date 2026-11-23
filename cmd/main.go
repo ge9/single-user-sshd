@@ -7,6 +7,7 @@ import (
 	"log"
 	"net"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/engity-com/ssh-server-go"
@@ -24,7 +25,7 @@ func main() {
 	perlPath := flag.String("perl", "", "if specified, used to provide Cygwin style UNIX socket (effective only in Windows)")
 	acceptEnv := flag.String("accept-env", "LANG,LC_*", "comma-separated list of accepted envs")
 	var authKeyFiles multi
-	flag.Var(&authKeyFiles, "a", "authorized_keys file path (repeatable)")
+	flag.Var(&authKeyFiles, "a", "authorized_keys file path (repeatable, default ~/.ssh/authorized_keys)")
 	var hostkeys multi
 	flag.Var(&hostkeys, "h", "host key file path (repeatable)")
 	sftpServer := flag.Bool("sftp-server", false, "serve SFTP on stdin/stdout like sftp-server and exit")
@@ -37,6 +38,10 @@ func main() {
 			log.Fatal(err)
 		}
 		return
+	}
+	if len(authKeyFiles) == 0 {
+		home, _ := os.UserHomeDir()
+		authKeyFiles = append(authKeyFiles, filepath.Join(home, ".ssh", "authorized_keys"))
 	}
 	if len(hostkeys) == 0 || len(authKeyFiles) == 0 {
 		log.Fatal("host key or authorized_keys file is missing")
